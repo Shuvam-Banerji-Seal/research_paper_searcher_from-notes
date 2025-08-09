@@ -1,0 +1,7 @@
+Flask
+Flask-CORS
+requests
+scrape-google-scholar-py
+rank_bm25
+nltk
+ollama

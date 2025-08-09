@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Academic AI Paper Search</title>
+    <!-- External Libraries -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <button class="theme-toggle" id="themeToggle" title="Toggle Theme">🌙</button>
+    
+    <div class="container">
+        <div class="header">
+            <h1>Academic AI Paper Search</h1>
+            <p>Intelligent research paper discovery across multiple databases with AI-powered query generation</p>
+            <div class="author-credit">Created by Shuvam Banerji Seal</div>
+        </div>
+
+        <div id="messageContainer" class="message-container"></div>
+        <div id="loadingOverlay" class="loading-overlay" style="display: none;">
+            <span id="loadingText">Processing...</span>
+            <div class="loading-spinner"></div>
+        </div>
+
+        <div class="main-content">
+            <!-- Configuration Section -->
+            <div class="config-section">
+                <h3 style="margin-bottom: 20px;">⚙️ Configuration</h3>
+                <div class="config-grid">
+                    <div class="form-group">
+                        <label for="maxResults">Max Results per Database</label>
+                        <select id="maxResults">
+                            <option value="5">5</option>
+                            <option value="10">10</option>
+                            <option value="20" selected>20</option>
+                            <option value="30">30</option>
+                            <option value="50">50</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <div class="toggle-container">
+                    <div class="toggle-group">
+                        <label for="aiSearch">AI-Powered Query Generation (using local Ollama)</label>
+                        <div class="toggle-switch">
+                            <input type="checkbox" id="aiSearch" checked>
+                            <span class="slider"></span>
+                        </div>
+                    </div>
+                    <div class="toggle-group">
+                        <label for="autoTranslate">Auto-translate (Conceptual)</label>
+                        <div class="toggle-switch">
+                            <input type="checkbox" id="autoTranslate">
+                            <span class="slider"></span>
+                        </div>
+                    </div>
+                </div>
+>>>>>>> REPLACE
+
+                <div style="margin-top: 20px;">
+                    <label style="margin-bottom: 10px; display: block;">🗄️ Search Databases</label>
+                    <div class="database-selector">
+                        <div class="database-option selected" data-db="arxiv">
+                            <input type="checkbox" id="db-arxiv" value="arxiv" checked>
+                            <label for="db-arxiv">ArXiv</label>
+                        </div>
+                        <div class="database-option selected" data-db="scholar">
+                            <input type="checkbox" id="db-scholar" value="scholar" checked>
+                            <label for="db-scholar">Google Scholar</label>
+                        </div>
+                        <div class="database-option" data-db="pubmed">
+                            <input type="checkbox" id="db-pubmed" value="pubmed">
+                            <label for="db-pubmed">PubMed</label>
+                        </div>
+                        <div class="database-option" data-db="semantic">
+                            <input type="checkbox" id="db-semantic" value="semantic">
+                            <label for="db-semantic">Semantic Scholar</label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Search Section -->
+            <div class="search-section">
+                <h3 style="margin-bottom: 20px;">🔍 Search Papers</h3>
+                
+                <div class="file-upload" id="fileUploadArea">
+                    <div style="font-size: 48px; margin-bottom: 15px;">📄</div>
+                    <p><strong>Drop files here or click to upload</strong></p>
+                    <p style="margin-top: 10px; opacity: 0.7;">Supports PDF files and images (PNG, JPG) for OCR</p>
+                    <input type="file" id="fileInput" style="display: none;" accept=".pdf,.png,.jpg,.jpeg" multiple>
+                </div>
+                
+                <div class="uploaded-files" id="uploadedFilesContainer"></div>
+
+                <div class="form-group" style="margin-bottom: 20px;">
+                    <label for="notes">📝 Additional Notes/Context for AI Query Generation</label>
+                    <textarea id="notes" rows="3" placeholder="Add any additional context, research questions, or specific requirements..."></textarea>
+                </div>
+
+                <div class="advanced-filters">
+                    <h4 style="margin-bottom: 15px;">🎯 Advanced Filters</h4>
+                    <div class="filter-grid">
+                        <div class="form-group">
+                            <label for="yearRange">Publication Year</label>
+                            <select id="yearRange">
+                                <option value="all">All Years</option>
+                                <option value="2024">2024 Only</option>
+                                <option value="2023-2024">2023-2024</option>
+                                <option value="2020-2024" selected>2020-2024</option>
+                                <option value="2015-2024">2015-2024</option>
+                                <option value="2010-2024">2010-2024</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="subject">Subject Category</label>
+                            <select id="subject">
+                                <option value="all">All Subjects</option>
+                                <option value="math">Mathematics</option>
+                                <option value="cs">Computer Science</option>
+                                <option value="physics">Physics</option>
+                                <option value="stat">Statistics</option>
+                                <option value="econ">Economics</option>
+                                <option value="q-bio">Quantitative Biology</option>
+                                <option value="q-fin">Quantitative Finance</option>
+                                <!-- Add more specific math categories if desired -->
+                                <option value="math.AP">Math: Analysis of PDEs</option>
+                                <option value="math.CO">Math: Combinatorics</option>
+                                <option value="math.NT">Math: Number Theory</option>
+                                <option value="math.PR">Math: Probability</option>
+                                <option value="math.ST">Math: Statistics Theory</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="paperType">Paper Type (for AI Query)</label>
+                            <select id="paperType">
+                                <option value="all">All Types</option>
+                                <option value="research">Research Articles</option>
+                                <option value="review">Review Papers</option>
+                                <option value="survey">Survey Papers</option>
+                                <option value="conference">Conference Papers</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="search-input-container">
+                    <input type="text" id="searchInput" class="search-input" placeholder="Enter your research topic, keywords, or specific questions...">
+                    <button id="searchBtn" class="search-btn">🔍 Search</button>
+                </div>
+
+                <div id="generatedQueriesContainer" class="generated-queries" style="display: none;">
+                    <h4>🤖 AI-Generated Search Queries:</h4>
+                    <div id="queryTagsContainer"></div>
+                </div>
+            </div>
+
+            <div id="statsDashboardContainer" class="stats-dashboard" style="display: none;">
+                <div class="stat-card">
+                    <div class="stat-number" id="totalResultsStat">0</div>
+                    <div class="stat-label">Total Papers</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number" id="avgYearStat">-</div>
+                    <div class="stat-label">Avg. Year</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number" id="databaseCountStat">0</div>
+                    <div class="stat-label">Databases</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number" id="citationCountStat">0</div>
+                    <div class="stat-label">Total Citations</div>
+                </div>
+            </div>
+
+            <div class="results-section">
+                <div class="results-header" style="display: none;" id="resultsHeaderContainer">
+                    <h3>📊 Search Results</h3>
+                    <div class="sort-controls">
+                        <span style="margin-right: 10px; color: #7f8c8d;">Sort by:</span>
+                        <button class="sort-btn active" data-sort="relevance">Relevance</button>
+                        <button class="sort-btn" data-sort="date">Date</button>
+                        <button class="sort-btn" data-sort="citations">Citations</button>
+                        <button class="sort-btn" data-sort="title">Title</button>
+                        <button class="sort-btn" data-sort="bm25_relevance">BM25 Relevance</button> <!-- ADD THIS -->
+                    </div>
+                </div>
+                <div id="resultsContainer">
+                     <p class="message info" style="text-align:center; display:block; opacity:1; transform:none;">Enter a search query to begin.</p>
+                </div>
+                
+                <div class="export-section" id="exportSectionContainer" style="display: none;">
+                    <h4 style="margin-bottom: 15px;">📥 Export Results</h4>
+                    <button class="export-btn" id="exportJsonBtn">JSON</button>
+                    <button class="export-btn" id="exportCsvBtn">CSV</button>
+                    <button class="export-btn" id="exportBibtexBtn">BibTeX</button>
+                    <button class="export-btn" id="exportPdfBtn">PDF Report</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script src="script.js"></script>
+ 
+</body>
+</html>

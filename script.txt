@@ -1,0 +1,1457 @@
+// script.js (Partial - showing key modifications and new functions)
+// Assume DOMElements, API_CONFIGS, utility functions like showMessage, setLoading are defined as before.
+ 
+        // --- Polyfills and Setup ---
+        if (typeof pdfjsLib !== 'undefined') {
+            pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        } else {
+            console.error("pdf.js library is not loaded!");
+        }
+
+        // --- Global Variables & Constants ---
+        const API_CONFIGS = {
+            openrouter: {
+                baseUrl: 'https://openrouter.ai/api/v1',
+                models: [
+                    'anthropic/claude-3.5-sonnet', 'openai/gpt-4o', 'openai/gpt-4-turbo', 'google/gemini-flash-1.5','meta-llama/llama-3-70b-instruct',
+                    'mistralai/mixtral-8x7b-instruct','anthropic/claude-3-haiku', 'google/gemini-pro', 
+                ]
+            },
+            groq: {
+                baseUrl: 'https://api.groq.com/openai/v1', // Groq uses OpenAI compatible API
+                models: ['llama3-70b-8192', 'llama3-8b-8192', 'mixtral-8x7b-32768', 'gemma-7b-it']
+            }
+        };
+
+        let uploadedFilesData = []; // Stores { name: string, text: string }
+        let currentSearchResults = [];
+        let currentSortCriteria = 'relevance';
+        let tesseractWorker = null;
+
+
+        // --- DOM Elements ---
+        const DOMElements = {
+            apiProviderSelect: document.getElementById('apiProvider'),
+            modelSelect: document.getElementById('model'),
+            apiKeyInput: document.getElementById('apiKey'),
+            maxResultsSelect: document.getElementById('maxResults'),
+            aiSearchToggle: document.getElementById('aiSearch'),
+            // autoTranslateToggle: document.getElementById('autoTranslate'), // Placeholder
+            databaseCheckboxes: document.querySelectorAll('.database-option input[type="checkbox"]'),
+            databaseOptions: document.querySelectorAll('.database-option'),
+
+            fileUploadArea: document.getElementById('fileUploadArea'),
+            fileInput: document.getElementById('fileInput'),
+            uploadedFilesContainer: document.getElementById('uploadedFilesContainer'),
+            notesTextarea: document.getElementById('notes'),
+
+            yearRangeSelect: document.getElementById('yearRange'),
+            subjectSelect: document.getElementById('subject'),
+            paperTypeSelect: document.getElementById('paperType'),
+
+            searchInput: document.getElementById('searchInput'),
+            searchBtn: document.getElementById('searchBtn'),
+            generatedQueriesContainer: document.getElementById('generatedQueriesContainer'),
+            queryTagsContainer: document.getElementById('queryTagsContainer'),
+
+            statsDashboardContainer: document.getElementById('statsDashboardContainer'),
+            totalResultsStat: document.getElementById('totalResultsStat'),
+            avgYearStat: document.getElementById('avgYearStat'),
+            databaseCountStat: document.getElementById('databaseCountStat'),
+            citationCountStat: document.getElementById('citationCountStat'),
+
+            resultsHeaderContainer: document.getElementById('resultsHeaderContainer'),
+            resultsContainer: document.getElementById('resultsContainer'),
+            sortBtns: document.querySelectorAll('.sort-btn'),
+
+            exportSectionContainer: document.getElementById('exportSectionContainer'),
+            exportJsonBtn: document.getElementById('exportJsonBtn'),
+            exportCsvBtn: document.getElementById('exportCsvBtn'),
+            exportBibtexBtn: document.getElementById('exportBibtexBtn'),
+            exportPdfBtn: document.getElementById('exportPdfBtn'),
+
+            themeToggleBtn: document.getElementById('themeToggle'),
+            loadingOverlay: document.getElementById('loadingOverlay'),
+            loadingText: document.getElementById('loadingText'),
+            messageContainer: document.getElementById('messageContainer'),
+        };
+
+        // --- Utility Functions ---
+        function showMessage(type, message, duration = 5000) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${type}`;
+            messageDiv.textContent = message;
+            DOMElements.messageContainer.appendChild(messageDiv);
+            setTimeout(() => {
+                messageDiv.style.opacity = '0';
+                messageDiv.style.transform = 'translateY(-20px) translateX(-50%)'; // Slide up
+                setTimeout(() => messageDiv.remove(), 500);
+            }, duration);
+        }
+
+        function setLoading(isLoading, text = "Processing...") {
+            DOMElements.loadingOverlay.style.display = isLoading ? 'flex' : 'none';
+            DOMElements.loadingText.textContent = text;
+            DOMElements.searchBtn.disabled = isLoading;
+        }
+
+        async function initializeTesseractWorker() {
+            if (!tesseractWorker && typeof Tesseract !== 'undefined') {
+                setLoading(true, "Initializing OCR Engine...");
+                try {
+                    tesseractWorker = await Tesseract.createWorker('eng', 1, {
+                        logger: m => console.log(m) // Optional: for progress logging
+                    });
+                    showMessage('info', 'OCR engine initialized.', 2000);
+                } catch (error) {
+                    console.error("Error initializing Tesseract worker:", error);
+                    showMessage('error', 'Failed to initialize OCR engine.');
+                    tesseractWorker = null; // Ensure it's null if failed
+                } finally {
+                    setLoading(false);
+                }
+            } else if (typeof Tesseract === 'undefined') {
+                 console.error("Tesseract.js library is not loaded!");
+                 showMessage('error', 'OCR library (Tesseract.js) not found.');
+            }
+        }
+
+
+        // --- Initialization and Event Listeners ---
+        document.addEventListener('DOMContentLoaded', () => {
+            updateModelDropdown();
+            initializeTesseractWorker(); // Initialize Tesseract on load
+
+            DOMElements.apiProviderSelect.addEventListener('change', updateModelDropdown);
+            DOMElements.searchBtn.addEventListener('click', handleSearch);
+            
+            DOMElements.fileUploadArea.addEventListener('click', () => DOMElements.fileInput.click());
+            DOMElements.fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
+
+            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                DOMElements.fileUploadArea.addEventListener(eventName, preventDefaults, false);
+                document.body.addEventListener(eventName, preventDefaults, false); // Prevent browser opening file
+            });
+            ['dragenter', 'dragover'].forEach(eventName => {
+                DOMElements.fileUploadArea.addEventListener(eventName, () => DOMElements.fileUploadArea.classList.add('dragover'), false);
+            });
+            ['dragleave', 'drop'].forEach(eventName => {
+                DOMElements.fileUploadArea.addEventListener(eventName, () => DOMElements.fileUploadArea.classList.remove('dragover'), false);
+            });
+            DOMElements.fileUploadArea.addEventListener('drop', handleDrop, false);
+
+            DOMElements.sortBtns.forEach(btn => {
+                btn.addEventListener('click', () => {
+                    DOMElements.sortBtns.forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    currentSortCriteria = btn.dataset.sort;
+                    sortAndRenderResults();
+                });
+            });
+
+            DOMElements.exportJsonBtn.addEventListener('click', () => exportResults('json'));
+            DOMElements.exportCsvBtn.addEventListener('click', () => exportResults('csv'));
+            DOMElements.exportBibtexBtn.addEventListener('click', () => exportResults('bibtex'));
+            DOMElements.exportPdfBtn.addEventListener('click', () => exportResults('pdf'));
+
+            DOMElements.themeToggleBtn.addEventListener('click', toggleTheme);
+            if (localStorage.getItem('theme') === 'dark-theme') {
+                document.body.classList.add('dark-theme');
+                DOMElements.themeToggleBtn.textContent = '☀️';
+            }
+
+            DOMElements.databaseOptions.forEach(option => {
+                const checkbox = option.querySelector('input[type="checkbox"]');
+                option.addEventListener('click', (e) => {
+                    if (e.target !== checkbox) { // Prevent double toggle if label is clicked
+                        checkbox.checked = !checkbox.checked;
+                    }
+                    option.classList.toggle('selected', checkbox.checked);
+                });
+            });
+        });
+
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        function handleDrop(e) {
+            let dt = e.dataTransfer;
+            let files = dt.files;
+            handleFiles(files);
+        }
+
+        function updateModelDropdown() {
+            const provider = DOMElements.apiProviderSelect.value;
+            const models = API_CONFIGS[provider].models;
+            DOMElements.modelSelect.innerHTML = models.map(model => `<option value="${model}">${model}</option>`).join('');
+        }
+
+        // --- File Handling and OCR ---
+        async function handleFiles(files) {
+            if (!files.length) return;
+            setLoading(true, "Processing files...");
+
+            for (const file of files) {
+                if (uploadedFilesData.find(f => f.name === file.name)) {
+                    showMessage('info', `File ${file.name} already uploaded.`);
+                    continue;
+                }
+                let text = '';
+                try {
+                    if (file.type === "application/pdf") {
+                        text = await extractTextFromPdf(file);
+                    } else if (file.type.startsWith("image/")) {
+                        if (!tesseractWorker) {
+                           await initializeTesseractWorker(); // try to init again if not ready
+                           if (!tesseractWorker) { // if still not ready, skip OCR
+                                showMessage('error', 'OCR Engine not ready. Cannot process image.');
+                                continue;
+                           }
+                        }
+                        text = await extractTextFromImage(file);
+                    } else {
+                        showMessage('error', `Unsupported file type: ${file.name}`);
+                        continue;
+                    }
+                    uploadedFilesData.push({ name: file.name, text: text });
+                    renderUploadedFiles();
+                    showMessage('success', `Processed: ${file.name}`);
+                } catch (error) {
+                    console.error("Error processing file:", file.name, error);
+                    showMessage('error', `Error processing ${file.name}: ${error.message}`);
+                }
+            }
+            setLoading(false);
+        }
+
+        async function extractTextFromPdf(file) {
+            const arrayBuffer = await file.arrayBuffer();
+            const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+            let fullText = '';
+            for (let i = 1; i <= pdf.numPages; i++) {
+                const page = await pdf.getPage(i);
+                const textContent = await page.getTextContent();
+                fullText += textContent.items.map(item => item.str).join(' ') + '\n';
+            }
+            return fullText;
+        }
+
+        async function extractTextFromImage(file) {
+            if (!tesseractWorker) {
+                throw new Error("Tesseract worker not initialized.");
+            }
+            const { data: { text } } = await tesseractWorker.recognize(file);
+            return text;
+        }
+
+        function renderUploadedFiles() {
+            DOMElements.uploadedFilesContainer.innerHTML = uploadedFilesData.map((file, index) => `
+                <div class="file-tag">
+                    ${file.name}
+                    <span class="remove" data-index="${index}" title="Remove file">×</span>
+                </div>
+            `).join('');
+
+            DOMElements.uploadedFilesContainer.querySelectorAll('.remove').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const index = parseInt(e.target.dataset.index);
+                    uploadedFilesData.splice(index, 1);
+                    renderUploadedFiles();
+                });
+            });
+        }
+
+        // --- LLM Query Generation ---
+        async function generateLLMQueries(mainTopic, notes, fileTextContent) {
+            const provider = DOMElements.apiProviderSelect.value;
+            const model = DOMElements.modelSelect.value;
+            const apiKey = DOMElements.apiKeyInput.value;
+
+            if (!apiKey) {
+                showMessage('error', 'API Key is required for AI-powered query generation.');
+                return [];
+            }
+
+            let context = `Main topic: ${mainTopic}\n`;
+            if (notes) context += `Additional notes/context: ${notes}\n`;
+            if (fileTextContent) context += `Content from uploaded files:\n${fileTextContent.substring(0, 4000)}\n`; // Limit context length
+
+            const subject = DOMElements.subjectSelect.value;
+            const paperType = DOMElements.paperTypeSelect.value;
+            
+            let subjectHint = "";
+            if (subject !== 'all') {
+                subjectHint = `The user is particularly interested in ${subject}. `;
+                if (subject.startsWith('math')) {
+                    subjectHint += `For ArXiv, queries like "cat:${subject} AND (keyword1 OR keyword2)" or using specific subcategories like "math.NT" for Number Theory are useful. `;
+                }
+            }
+            let paperTypeHint = "";
+            if (paperType !== 'all') {
+                paperTypeHint = `Focus on finding ${paperType}. `
+            }
+
+            const prompt = `
+                You are an expert research assistant helping a user find academic papers.
+                Based on the following information, generate 3-5 diverse and effective search queries suitable for academic search engines like ArXiv, Google Scholar, PubMed, and Semantic Scholar.
+                ${subjectHint}
+                ${paperTypeHint}
+                Prioritize queries that would yield papers in mathematics if the context suggests it.
+                For ArXiv, you can use field codes (e.g., ti: for title, au: for author, cat: for category).
+                For general search engines, use boolean operators (AND, OR, NOT) and phrase searching ("").
+                Return ONLY a JSON array of strings, where each string is a search query. Example: ["query1", "query2", "query3"]
+
+                User-provided context:
+                ${context}
+            `;
+
+            setLoading(true, "Generating AI queries...");
+            try {
+                const response = await fetch(`${API_CONFIGS[provider].baseUrl}/chat/completions`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${apiKey}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        model: model,
+                        messages: [{ role: 'user', content: prompt }],
+                        temperature: 0.5, // Lower temperature for more focused queries
+                        max_tokens: 300
+                    })
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(`LLM API Error (${response.status}): ${errorData.error?.message || response.statusText}`);
+                }
+
+                const data = await response.json();
+                const content = data.choices[0]?.message?.content;
+                if (content) {
+                    // Try to parse as JSON array of strings
+                    try {
+                        let queries = JSON.parse(content);
+                        if (Array.isArray(queries) && queries.every(q => typeof q === 'string')) {
+                             showMessage('success', 'AI queries generated.');
+                            return queries;
+                        }
+                    } catch (e) { /* ignore parsing error, try regex */ }
+
+                    // Fallback: extract queries if not perfect JSON array (e.g. if LLM adds surrounding text)
+                    const queryRegex = /"([^"]+)"/g;
+                    let matches;
+                    const extractedQueries = [];
+                    while ((matches = queryRegex.exec(content)) !== null) {
+                        extractedQueries.push(matches[1]);
+                    }
+                    if (extractedQueries.length > 0) {
+                        showMessage('success', 'AI queries generated (extracted).');
+                        return extractedQueries;
+                    }
+                }
+                throw new Error("LLM did not return valid queries.");
+
+            } catch (error) {
+                console.error("Error generating LLM queries:", error);
+                showMessage('error', `Failed to generate AI queries: ${error.message}`);
+                return [];
+            } finally {
+                setLoading(false);
+            }
+        }
+
+
+        // --- Search Logic ---
+        async function handleSearch() {
+            const mainTopic = DOMElements.searchInput.value.trim();
+            if (!mainTopic && !uploadedFilesData.length) {
+                showMessage('error', 'Please enter a search topic or upload a file.');
+                return;
+            }
+
+            currentSearchResults = [];
+            DOMElements.resultsContainer.innerHTML = ''; // Clear previous results
+            setLoading(true, "Searching...");
+
+            const selectedDBs = Array.from(DOMElements.databaseCheckboxes)
+                                   .filter(cb => cb.checked)
+                                   .map(cb => cb.value);
+
+            if (selectedDBs.length === 0) {
+                showMessage('error', 'Please select at least one database to search.');
+                setLoading(false);
+                return;
+            }
+
+            let searchQueries = [mainTopic]; // Default to user's input
+
+            if (DOMElements.aiSearchToggle.checked) {
+                const notes = DOMElements.notesTextarea.value.trim();
+                const fileTextContent = uploadedFilesData.map(f => f.text).join('\n\n').trim();
+                const generatedQueries = await generateLLMQueries(mainTopic, notes, fileTextContent);
+                
+                if (generatedQueries.length > 0) {
+                    searchQueries = generatedQueries; // Use AI queries if available
+                    DOMElements.generatedQueriesContainer.style.display = 'block';
+                    DOMElements.queryTagsContainer.innerHTML = generatedQueries.map(q => `<span class="query-tag">${q}</span>`).join('');
+                } else {
+                    DOMElements.generatedQueriesContainer.style.display = 'none';
+                    if (!mainTopic) { // If main topic was empty and AI failed
+                        showMessage('error', 'AI query generation failed and no manual topic entered.');
+                        setLoading(false);
+                        return;
+                    }
+                }
+            } else {
+                DOMElements.generatedQueriesContainer.style.display = 'none';
+                 if (!mainTopic) { // If main topic was empty and AI search off
+                    showMessage('error', 'AI search is off and no manual topic entered.');
+                    setLoading(false);
+                    return;
+                }
+            }
+
+
+            const maxResults = parseInt(DOMElements.maxResultsSelect.value);
+            const filters = getAdvancedFilters();
+            let allFetches = [];
+
+            for (const db of selectedDBs) {
+                // For simplicity, we'll use the first AI query for each DB or the main topic.
+                // A more advanced approach might use different queries or combine results.
+                const queryToUse = searchQueries[0] || mainTopic; 
+                
+                // Or, iterate through all AI queries for each DB (can be many requests)
+                // For now, let's use the first relevant query, or all if not too many
+                let queriesForDb = searchQueries.slice(0, Math.min(searchQueries.length, 3)); // Use up to 3 AI queries or the single manual one
+                if (queriesForDb.length === 0 && mainTopic) queriesForDb.push(mainTopic);
+
+
+                queriesForDb.forEach(q => {
+                    if (!q) return; // Skip empty queries
+                    switch (db) {
+                        case 'arxiv':
+                            allFetches.push(searchArxiv(q, maxResults, filters).catch(handleSearchError(db)));
+                            break;
+                        case 'scholar':
+                            allFetches.push(searchGoogleScholarMock(q, maxResults, filters).catch(handleSearchError(db)));
+                            break;
+                        case 'pubmed':
+                            allFetches.push(searchPubMed(q, maxResults, filters).catch(handleSearchError(db)));
+                            break;
+                        case 'semantic':
+                            allFetches.push(searchSemanticScholar(q, maxResults, filters).catch(handleSearchError(db)));
+                            break;
+                    }
+                });
+            }
+
+            const resultsFromAllDBs = await Promise.all(allFetches);
+            resultsFromAllDBs.forEach(resultSet => {
+                if (resultSet && Array.isArray(resultSet)) { // Filter out nulls from errors
+                    currentSearchResults.push(...resultSet);
+                }
+            });
+            
+            // Deduplicate results based on title and first author (simple deduplication)
+            const uniqueResults = [];
+            const seen = new Set();
+            for (const paper of currentSearchResults) {
+                const key = `${paper.title.toLowerCase()}|${(paper.authors && paper.authors.length > 0) ? paper.authors[0].toLowerCase() : ''}`;
+                if (!seen.has(key)) {
+                    uniqueResults.push(paper);
+                    seen.add(key);
+                }
+            }
+            currentSearchResults = uniqueResults;
+
+
+            if (currentSearchResults.length === 0) {
+                 DOMElements.resultsContainer.innerHTML = `<p class="message info" style="text-align:center; display:block; opacity:1; transform:none;">No papers found matching your criteria.</p>`;
+            } else {
+                sortAndRenderResults();
+                DOMElements.resultsHeaderContainer.style.display = 'flex';
+                DOMElements.exportSectionContainer.style.display = 'block';
+            }
+            updateStatsDashboard(currentSearchResults, selectedDBs.length);
+            setLoading(false);
+        }
+        
+        function handleSearchError(dbName) {
+            return (error) => {
+                console.error(`Error searching ${dbName}:`, error);
+                showMessage('error', `Failed to fetch results from ${dbName}: ${error.message}`);
+                return null; // Return null so Promise.all doesn't reject entirely
+            };
+        }
+
+        function getAdvancedFilters() {
+            const yearRange = DOMElements.yearRangeSelect.value;
+            let yearStart, yearEnd;
+            if (yearRange.includes('-')) {
+                [yearStart, yearEnd] = yearRange.split('-').map(Number);
+            } else if (yearRange !== 'all') {
+                yearStart = yearEnd = Number(yearRange);
+            }
+
+            return {
+                yearStart,
+                yearEnd,
+                subject: DOMElements.subjectSelect.value,
+                paperType: DOMElements.paperTypeSelect.value // Mainly for LLM, but can be used for filtering if API supports
+            };
+        }
+
+        // --- Database Specific Search Functions ---
+        async function searchArxiv(query, maxResults, filters) {
+            let searchQuery = query;
+            if (filters.subject && filters.subject !== 'all' && filters.subject.startsWith('math')) {
+                 // More specific ArXiv search for math by category
+                 searchQuery = `(${query}) AND (cat:${filters.subject}*)`;
+            } else if (filters.subject && filters.subject !== 'all') {
+                searchQuery = `(${query}) AND (cat:${filters.subject}*)`; // General subject category
+            }
+            // ArXiv API expects '+' for spaces in query terms, but often works with URL encoding too.
+            // Using `all:` prefix for general keyword search, or structure as needed.
+            // A common structure: `all:(term1 term2) AND ti:(title_term) AND au:(author_term)`
+            // For simplicity, we'll use a general search.
+            const baseUrl = 'https://export.arxiv.org/api/query';
+            const params = new URLSearchParams({
+                search_query: `all:${searchQuery}`,
+                max_results: maxResults,
+                sortBy: 'relevance', // or 'lastUpdatedDate', 'submittedDate'
+                sortOrder: 'descending'
+            });
+            const response = await fetch(`${baseUrl}?${params.toString()}`);
+            if (!response.ok) throw new Error(`ArXiv API error: ${response.statusText}`);
+            
+            const xmlText = await response.text();
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(xmlText, "text/xml");
+            const entries = xmlDoc.getElementsByTagName("entry");
+            const papers = [];
+
+            for (let entry of entries) {
+                const title = entry.getElementsByTagName("title")[0]?.textContent.trim().replace(/\s+/g, ' ') || 'N/A';
+                const authors = Array.from(entry.getElementsByTagName("author")).map(a => a.getElementsByTagName("name")[0]?.textContent.trim());
+                const abstract = entry.getElementsByTagName("summary")[0]?.textContent.trim().replace(/\s+/g, ' ') || 'N/A';
+                const published = entry.getElementsByTagName("published")[0]?.textContent || '';
+                const updated = entry.getElementsByTagName("updated")[0]?.textContent || '';
+                const id = entry.getElementsByTagName("id")[0]?.textContent || '';
+                const pdfLink = Array.from(entry.getElementsByTagName("link")).find(l => l.getAttribute('title') === 'pdf')?.getAttribute('href') || id.replace('/abs/', '/pdf/');
+                const primaryCategory = entry.getElementsByTagName("arxiv:primary_category")[0]?.getAttribute('term') || '';
+
+
+                let year = new Date(published || updated).getFullYear();
+                if (filters.yearStart && year < filters.yearStart) continue;
+                if (filters.yearEnd && year > filters.yearEnd) continue;
+
+
+                papers.push({
+                    id: id,
+                    title,
+                    authors,
+                    abstract,
+                    publishedDate: published || updated,
+                    year: year,
+                    url: id,
+                    pdfUrl: pdfLink,
+                    source: 'ArXiv',
+                    relevanceScore: 1, // ArXiv API sort by relevance is implicit
+                    citations: null, // ArXiv doesn't directly provide citation counts in basic API
+                    categories: [primaryCategory]
+                });
+            }
+            return papers;
+        }
+
+        async function searchGoogleScholarMock(query, maxResults, filters) {
+            // !!! This is a MOCKED function. Google Scholar has no free public API. !!!
+            // !!! For real results, use a paid service like SerpApi.          !!!
+            showMessage('info', "Google Scholar search is MOCKED. Displaying sample data.", 7000);
+            await new Promise(resolve => setTimeout(resolve, 500)); // Simulate network delay
+            const papers = [];
+            for (let i = 0; i < Math.min(maxResults, 5); i++) {
+                const year = filters.yearStart ? filters.yearStart + i % ( (filters.yearEnd || filters.yearStart) - filters.yearStart + 1) : 2020 + i;
+                if (filters.yearStart && year < filters.yearStart) continue;
+                if (filters.yearEnd && year > filters.yearEnd) continue;
+
+                papers.push({
+                    id: `scholar-mock-${i}-${Date.now()}`,
+                    title: `Mock Scholar Paper on "${query.substring(0,20)}..." (${i + 1})`,
+                    authors: [`Mock Author ${String.fromCharCode(65 + i)}`, "et al."],
+                    abstract: `This is a mock abstract for a paper found on Google Scholar related to "${query}". It discusses various important concepts and methodologies. (Mocked result).`,
+                    publishedDate: `${year}-01-01`,
+                    year: year,
+                    url: `https://scholar.google.com/scholar?q=${encodeURIComponent(query)}`,
+                    pdfUrl: null, // Scholar often links to publisher sites, not direct PDFs
+                    source: 'Google Scholar (Mock)',
+                    relevanceScore: 0.9 - i * 0.05,
+                    citations: Math.floor(Math.random() * 200)
+                });
+            }
+            return papers;
+        }
+
+        async function searchPubMed(query, maxResults, filters) {
+            const eutilsBase = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/';
+            
+            // Step 1: Search for IDs
+            let term = query;
+            if (filters.yearStart || filters.yearEnd) {
+                const start = filters.yearStart || '1900';
+                const end = filters.yearEnd || new Date().getFullYear();
+                term += ` AND ("${start/101/01}"[Date - Publication] : "${end}/12/31"[Date - Publication])`;
+            }
+
+            const searchParams = new URLSearchParams({
+                db: 'pubmed',
+                term: term,
+                retmax: maxResults,
+                usehistory: 'y',
+                retmode: 'json'
+            });
+            const searchResp = await fetch(`${eutilsBase}esearch.fcgi?${searchParams.toString()}`);
+            if (!searchResp.ok) throw new Error(`PubMed ESearch API error: ${searchResp.statusText}`);
+            const searchData = await searchResp.json();
+
+            const idList = searchData.esearchresult?.idlist;
+            if (!idList || idList.length === 0) return [];
+
+            // Step 2: Fetch summaries for IDs
+            const summaryParams = new URLSearchParams({
+                db: 'pubmed',
+                id: idList.join(','),
+                retmode: 'xml' // XML is richer for abstracts on PubMed summary
+            });
+            // Fetching summaries, sometimes better to use efetch for full abstract, but esummary is quicker
+            const summaryResp = await fetch(`${eutilsBase}esummary.fcgi?${summaryParams.toString()}`);
+            if (!summaryResp.ok) throw new Error(`PubMed ESummary API error: ${summaryResp.statusText}`);
+            
+            const xmlText = await summaryResp.text();
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(xmlText, "text/xml");
+            const docSums = xmlDoc.getElementsByTagName("DocSum");
+            const papers = [];
+
+            for (let doc of docSums) {
+                const id = doc.getElementsByTagName("Id")[0]?.textContent;
+                const title = doc.querySelector('Item[Name="Title"]')?.textContent || 'N/A';
+                const authors = Array.from(doc.querySelectorAll('Item[Name="AuthorList"] Item[Name="Author"]'))
+                                     .map(a => a.textContent);
+                // PubMed's esummary doesn't directly provide abstracts.
+                // For full abstracts, efetch is needed, or parse from article link.
+                // Here, we'll try to find an abstract snippet if available or leave it N/A.
+                // A more robust solution would be another call to efetch for each ID.
+                let abstract = "Abstract not available via ESummary. Full text link may contain it.";
+                // Try to find if 'AbstractText' is available (rare in esummary for pubmed)
+                const abstractNode = Array.from(doc.getElementsByTagName("Item")).find(item => item.getAttribute("Name") === "Abstract");
+                if (abstractNode) abstract = abstractNode.textContent;
+
+
+                const pubDateStr = doc.querySelector('Item[Name="PubDate"]')?.textContent || '';
+                const year = parseInt(pubDateStr.substring(0, 4)) || null;
+
+                const doi = Array.from(doc.getElementsByTagName("Item")).find(item => item.getAttribute("Name") === "DOI")?.textContent || null;
+                const url = doi ? `https://doi.org/${doi}` : `https://pubmed.ncbi.nlm.nih.gov/${id}/`;
+
+                papers.push({
+                    id: `pubmed-${id}`,
+                    title,
+                    authors,
+                    abstract,
+                    publishedDate: pubDateStr,
+                    year,
+                    url,
+                    pdfUrl: null, // PubMed links to articles, PDFs are on publisher sites
+                    source: 'PubMed',
+                    relevanceScore: 0.8, // Default relevance
+                    citations: null // PubMed API doesn't easily provide citation counts like this
+                });
+            }
+            return papers;
+        }
+
+        async function searchSemanticScholar(query, maxResults, filters) {
+            // Semantic Scholar API key can be requested for higher rate limits, but basic usage is often keyless.
+            // Using the new Graph API endpoint:
+            const baseUrl = 'https://api.semanticscholar.org/graph/v1/paper/search';
+            const params = new URLSearchParams({
+                query: query,
+                limit: maxResults,
+                fields: 'title,authors.name,abstract,year,url,venue,publicationDate,externalIds,citationCount,tldr'
+            });
+
+            if (filters.yearStart || filters.yearEnd) {
+                const start = filters.yearStart || '*';
+                const end = filters.yearEnd || '*';
+                params.append('year', `${start}-${end}`);
+            }
+
+            const response = await fetch(`${baseUrl}?${params.toString()}`);
+            if (!response.ok) {
+                 const errorData = await response.json();
+                 throw new Error(`Semantic Scholar API error (${response.status}): ${errorData.message || response.statusText}`);
+            }
+            const data = await response.json();
+            const papers = [];
+
+            if (data.data) {
+                for (let item of data.data) {
+                    // TLDR can be a good substitute if abstract is too long or missing
+                    let abstractText = item.abstract;
+                    if (!abstractText && item.tldr && item.tldr.text) {
+                        abstractText = `TLDR: ${item.tldr.text}`;
+                    }
+                    if (!abstractText) abstractText = "No abstract available.";
+
+
+                    papers.push({
+                        id: `semantic-${item.paperId}`,
+                        title: item.title || 'N/A',
+                        authors: item.authors?.map(a => a.name) || [],
+                        abstract: abstractText,
+                        publishedDate: item.publicationDate || (item.year ? `${item.year}-01-01` : 'N/A'),
+                        year: item.year || null,
+                        url: item.url,
+                        pdfUrl: item.externalIds?.DOI ? `https://doi.org/${item.externalIds.DOI}` : null, // Or try to find PDF link
+                        source: 'Semantic Scholar',
+                        relevanceScore: item.score || 0.7, // If API provides score
+                        citations: item.citationCount || 0,
+                        venue: item.venue
+                    });
+                }
+            }
+            return papers;
+        }
+
+        // --- Results Rendering and Sorting ---
+        function sortAndRenderResults() {
+            if (!currentSearchResults || currentSearchResults.length === 0) return;
+
+            currentSearchResults.sort((a, b) => {
+                switch (currentSortCriteria) {
+                    case 'date':
+                        return (new Date(b.publishedDate || 0)) - (new Date(a.publishedDate || 0));
+                    case 'citations':
+                        return (b.citations || 0) - (a.citations || 0);
+                    case 'title':
+                        return a.title.localeCompare(b.title);
+                    case 'relevance':
+                    default:
+                        return (b.relevanceScore || 0) - (a.relevanceScore || 0);
+                }
+            });
+            renderResults(currentSearchResults);
+        }
+
+        function renderResults(results) {
+            if (!results || results.length === 0) {
+                 DOMElements.resultsContainer.innerHTML = `<p class="message info" style="text-align:center; display:block; opacity:1; transform:none;">No papers found matching your criteria.</p>`;
+                 DOMElements.resultsHeaderContainer.style.display = 'none';
+                 DOMElements.exportSectionContainer.style.display = 'none';
+                 return;
+            }
+            DOMElements.resultsContainer.innerHTML = results.map(paper => `
+                <div class="paper-card">
+                    <div class="paper-header">
+                        <h4 class="paper-title"><a href="${paper.url}" target="_blank" rel="noopener noreferrer">${paper.title}</a></h4>
+                        <span class="paper-source">${paper.source}</span>
+                    </div>
+                    <p class="paper-authors">Authors: ${paper.authors?.join(', ') || 'N/A'}</p>
+                    <div class="paper-abstract">
+                        ${paper.abstract ? paper.abstract.substring(0, 300) + (paper.abstract.length > 300 ? '...' : '') : 'No abstract available.'}
+                    </div>
+                    ${paper.abstract && paper.abstract.length > 300 ? '<span class="abstract-toggle">Read more</span>' : ''}
+                    <div class="paper-meta">
+                        <span>Published: ${paper.publishedDate ? new Date(paper.publishedDate).toLocaleDateString() : 'N/A'}</span>
+                        <span>Citations: ${paper.citations !== null ? paper.citations : 'N/A'}</span>
+                        <div class="paper-actions">
+                            ${paper.pdfUrl ? `<a href="${paper.pdfUrl}" class="action-btn" target="_blank" rel="noopener noreferrer">PDF</a>` : ''}
+                            <a href="${paper.url}" class="action-btn" target="_blank" rel="noopener noreferrer">Source Page</a>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+            
+            // Add event listeners for "Read more" toggles
+            DOMElements.resultsContainer.querySelectorAll('.abstract-toggle').forEach((toggle, index) => {
+                toggle.addEventListener('click', () => {
+                    const abstractDiv = toggle.previousElementSibling; // The .paper-abstract div
+                    abstractDiv.classList.toggle('expanded');
+                    if (abstractDiv.classList.contains('expanded')) {
+                        abstractDiv.textContent = results[index].abstract; // Show full abstract
+                        toggle.textContent = 'Read less';
+                    } else {
+                        abstractDiv.textContent = results[index].abstract.substring(0, 300) + '...';
+                        toggle.textContent = 'Read more';
+                    }
+                });
+            });
+        }
+
+        // --- Stats Dashboard ---
+        function updateStatsDashboard(results, dbCount) {
+            if (!results || results.length === 0) {
+                DOMElements.statsDashboardContainer.style.display = 'none';
+                return;
+            }
+            DOMElements.statsDashboardContainer.style.display = 'grid';
+            DOMElements.totalResultsStat.textContent = results.length;
+            DOMElements.databaseCountStat.textContent = dbCount;
+
+            const years = results.map(p => p.year).filter(y => y && !isNaN(y));
+            if (years.length > 0) {
+                const avgYear = years.reduce((sum, year) => sum + year, 0) / years.length;
+                DOMElements.avgYearStat.textContent = Math.round(avgYear);
+            } else {
+                DOMElements.avgYearStat.textContent = '-';
+            }
+
+            const totalCitations = results.reduce((sum, p) => sum + (p.citations || 0), 0);
+            DOMElements.citationCountStat.textContent = totalCitations;
+        }
+
+        // --- Export Functionality ---
+        function exportResults(format) {
+            if (currentSearchResults.length === 0) {
+                showMessage('info', 'No results to export.');
+                return;
+            }
+
+            const filename = `academic_search_results_${new Date().toISOString().slice(0,10)}`;
+
+            switch (format) {
+                case 'json':
+                    const jsonData = JSON.stringify(currentSearchResults, null, 2);
+                    downloadFile(jsonData, `${filename}.json`, 'application/json');
+                    break;
+                case 'csv':
+                    if (typeof Papa === 'undefined') {
+                        showMessage('error', 'CSV Export library (PapaParse) not loaded.'); return;
+                    }
+                    const csvData = Papa.unparse(currentSearchResults.map(p => ({
+                        Title: p.title,
+                        Authors: p.authors?.join('; ') || '',
+                        Year: p.year || '',
+                        Source: p.source,
+                        URL: p.url,
+                        PDF_URL: p.pdfUrl || '',
+                        Abstract: p.abstract?.replace(/(\r\n|\n|\r)/gm, " ") || '', // Remove newlines for CSV
+                        Citations: p.citations !== null ? p.citations : '',
+                        PublishedDate: p.publishedDate || ''
+                    })));
+                    downloadFile(csvData, `${filename}.csv`, 'text/csv;charset=utf-8;');
+                    break;
+                case 'bibtex':
+                    const bibtexData = currentSearchResults.map(p => {
+                        const authorList = p.authors?.join(' and ') || 'Unknown Author';
+                        const entryType = (p.source === "ArXiv" || (p.venue && p.venue.toLowerCase().includes('arxiv'))) ? 'article' : 'misc'; // Simple guess
+                        // BibTeX keys need to be unique and simple: AuthorYearTitleWord
+                        const firstAuthorLastName = p.authors?.[0]?.split(' ').pop() || 'Unknown';
+                        const titleFirstWord = p.title?.split(' ')[0]?.replace(/[^a-zA-Z0-9]/g, '') || 'N_A';
+                        const bibKey = `${firstAuthorLastName}${p.year || 'ND'}${titleFirstWord}`;
+
+                        return `@${entryType}{${bibKey},
+  author    = {${authorList}},
+  title     = {${p.title}},
+  year      = {${p.year || 'n.d.'}},
+  ${p.url ? `url       = {${p.url}},` : ''}
+  ${p.source === 'ArXiv' && p.id ? `eprint    = {${p.id.replace('http://arxiv.org/abs/','')}},
+  archivePrefix = {arXiv},
+  primaryClass  = {${p.categories?.[0] || ''}},` : ''}
+  ${p.source === 'PubMed' && p.id.startsWith('pubmed-') ? `PMID      = {${p.id.replace('pubmed-','')}},` : ''}
+  ${p.citations !== null ? `note      = {Citations: ${p.citations}},` : ''}
+  source    = {${p.source}}
+}`;
+                    }).join('\n\n');
+                    downloadFile(bibtexData, `${filename}.bib`, 'application/x-bibtex');
+                    break;
+                case 'pdf':
+                    if (typeof jspdf === 'undefined' || typeof jspdf.jsPDF === 'undefined') {
+                         showMessage('error', 'PDF Export library (jsPDF) not loaded.'); return;
+                    }
+                    const { jsPDF } = jspdf;
+                    const doc = new jsPDF();
+                    doc.setFontSize(18);
+                    doc.text("Academic Search Results", 14, 22);
+                    doc.setFontSize(11);
+                    doc.setTextColor(100);
+                    doc.text(`Exported on: ${new Date().toLocaleDateString()}`, 14, 30);
+                    
+                    let yPos = 40;
+                    currentSearchResults.forEach((p, index) => {
+                        if (yPos > 270) { // New page if yPos exceeds ~270mm
+                            doc.addPage();
+                            yPos = 20;
+                        }
+                        doc.setFontSize(12);
+                        doc.setTextColor(0,0,255); // Blue for title/link
+                        doc.textWithLink(`${index + 1}. ${p.title}`, 14, yPos, { url: p.url });
+                        doc.setTextColor(0); // Reset color
+                        yPos += 7;
+                        doc.setFontSize(9);
+                        doc.text(`Authors: ${p.authors?.join(', ') || 'N/A'}`, 16, yPos);
+                        yPos += 5;
+                        doc.text(`Source: ${p.source} | Year: ${p.year || 'N/A'} | Citations: ${p.citations !== null ? p.citations : 'N/A'}`, 16, yPos);
+                        yPos += 7;
+                    });
+                    doc.save(`${filename}.pdf`);
+                    break;
+            }
+            showMessage('success', `${format.toUpperCase()} export started.`);
+        }
+
+        function downloadFile(content, filename, contentType) {
+            const a = document.createElement('a');
+            const blob = new Blob([content], { type: contentType });
+            a.href = URL.createObjectURL(blob);
+            a.download = filename;
+            a.click();
+            URL.revokeObjectURL(a.href);
+        }
+
+        // --- Theme Toggle ---
+        function toggleTheme() {
+            document.body.classList.toggle('dark-theme');
+            if (document.body.classList.contains('dark-theme')) {
+                DOMElements.themeToggleBtn.textContent = '☀️'; // Sun icon for dark mode
+                localStorage.setItem('theme', 'dark-theme');
+            } else {
+                DOMElements.themeToggleBtn.textContent = '🌙'; // Moon icon for light mode
+                localStorage.setItem('theme', 'light-theme');
+            }
+        }
+
+// --- Global Variables & Constants (Additions/Modifications) ---
+const BACKEND_URL = 'http://localhost:5001'; // Your Flask backend URL
+let currentVerboseBM25Query = ""; // To store the LLM generated verbose query for BM25
+
+// --- Initialization and Event Listeners (Additions/Modifications) ---
+document.addEventListener('DOMContentLoaded', () => {
+    // ... (existing initializations) ...
+
+    // Add new sort button for BM25 if it's not there.
+    // Ensure this button exists in your HTML:
+    // <button class="sort-btn" data-sort="bm25_relevance">BM25 Relevance</button>
+    DOMElements.sortBtns = document.querySelectorAll('.sort-btn'); // Re-query if dynamically added
+    DOMElements.sortBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            DOMElements.sortBtns.forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            const newSortCriteria = btn.dataset.sort;
+            
+            if (newSortCriteria === 'bm25_relevance' && currentSortCriteria !== 'bm25_relevance') {
+                // If switching to BM25, and results exist, trigger BM25 ranking
+                currentSortCriteria = newSortCriteria;
+                if (currentSearchResults.length > 0) {
+                    handleBM25Ranking(); 
+                } else {
+                     showMessage('info', 'Search for papers first to use BM25 ranking.');
+                }
+            } else {
+                 currentSortCriteria = newSortCriteria;
+                 sortAndRenderResults(); // For other sort types or if BM25 already calculated
+            }
+        });
+    });
+});
+
+
+// --- LLM Query Generation (Enhanced Prompt) ---
+async function generateLLMQueries(mainTopic, notes, fileTextContent) {
+    const provider = DOMElements.apiProviderSelect.value;
+    const model = DOMElements.modelSelect.value;
+    const apiKey = DOMElements.apiKeyInput.value;
+
+    if (!apiKey && DOMElements.aiSearchToggle.checked) { // Check toggle too
+        showMessage('error', 'API Key is required for AI-powered query generation.');
+        return [];
+    }
+
+    let context = `User's main topic/question: "${mainTopic}"\n`;
+    if (notes) context += `Additional notes/context from user: "${notes}"\n`;
+    if (fileTextContent) context += `Key content extracted from uploaded documents (e.g., lecture notes, paper excerpts, book pages):\n---\n${fileTextContent.substring(0, 4000)}\n---\n`;
+
+    const subject = DOMElements.subjectSelect.value;
+    const paperType = DOMElements.paperTypeSelect.value;
+    
+    let subjectHint = "";
+    if (subject && subject !== 'all') {
+        subjectHint = `The user is particularly interested in the academic subject area of: ${subject}. `;
+        if (subject.toLowerCase().includes('math')) {
+            subjectHint += `For ArXiv, relevant categories might be 'math.XX' (e.g., 'math.NT' for Number Theory, 'math.CO' for Combinatorics), 'stat.TH' (Statistics Theory), etc. Queries can use 'cat:math.XX AND (term OR term)'. `;
+        } else if (subject.toLowerCase().includes('cs') || subject.toLowerCase().includes('computer science')) {
+             subjectHint += `For ArXiv, relevant categories might be 'cs.XX' (e.g., 'cs.AI' for AI, 'cs.LG' for Machine Learning). `;
+        }
+    }
+    let paperTypeHint = "";
+    if (paperType && paperType !== 'all') {
+        paperTypeHint = `The user is looking for papers that are primarily of type: ${paperType}. `;
+    }
+
+    const prompt = `
+You are an expert research assistant. Your task is to generate highly effective search queries for academic databases like ArXiv and Google Scholar, based on the user's input.
+The user's input might include a main topic, additional notes, and text extracted from documents (like lecture notes, research papers, or book pages).
+
+User-provided information:
+${context}
+
+Specific interests:
+${subjectHint}
+${paperTypeHint}
+
+Instructions:
+1.  Analyze all the provided information to understand the core research area, key concepts, specific problems, relevant mathematical formalisms or algorithms (if any), and potentially important authors or seminal works mentioned.
+2.  Generate 3-5 DIVERSE and PRECISE search queries. These queries should be what an expert researcher would type into a search bar.
+3.  For ArXiv:
+    *   Utilize field codes where appropriate (e.g., 'ti:(title terms)', 'au:(author name)', 'abs:(abstract terms)', 'cat:(category e.g., math.NT or cs.AI)').
+    *   Combine terms using boolean operators (AND, OR, NOT). Example: "cat:math.PR AND ti:(stochastic processes) AND (markov chains OR random walks)"
+4.  For Google Scholar (and general academic search):
+    *   Use boolean operators (AND, OR, NOT).
+    *   Use exact phrases with double quotes (e.g., "deep learning for theorem proving").
+    *   Consider using operators like 'author:"J Doe"' or 'source:"Nature"'.
+5.  If the input text is complex (e.g., from a research paper), try to extract specific terminology, method names, or unique phrases that would be good search terms.
+6.  Focus on precision. Avoid overly broad queries.
+7.  The queries should be optimized for mathematical papers if the context or subject strongly suggests it.
+
+Output Format:
+Return ONLY a JSON array of strings, where each string is a distinct search query. Do not include any other text or explanations.
+Example: ["ti:(quantum field theory) AND cat:hep-th", "gravitational waves ligo virgo", "author:\\"Witten E\\" string theory"]
+`;
+
+    setLoading(true, "Generating AI search queries...");
+    try {
+        const response = await fetch(`${API_CONFIGS[provider].baseUrl}/chat/completions`, { /* ... (same as before) ... */
+             method: 'POST',
+             headers: {
+                 'Authorization': `Bearer ${apiKey}`,
+                 'Content-Type': 'application/json'
+             },
+             body: JSON.stringify({
+                 model: model,
+                 messages: [{ role: 'user', content: prompt }],
+                 temperature: 0.4, // Slightly lower for more focused queries
+                 max_tokens: 400,
+                 response_format: { type: "json_object" } // If supported by model/provider
+             })
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(`LLM API Error (${response.status}) for query generation: ${errorData.error?.message || response.statusText}`);
+        }
+
+        const data = await response.json();
+        let content = data.choices[0]?.message?.content;
+        
+        if (content) {
+            try {
+                // Attempt to parse the entire content as JSON if response_format was used
+                let parsedJson = JSON.parse(content);
+                // The actual queries might be nested if the LLM wrapped it, e.g. { "queries": ["q1", "q2"] }
+                // Look for an array of strings.
+                let queriesArray = null;
+                if (Array.isArray(parsedJson)) {
+                    queriesArray = parsedJson;
+                } else if (typeof parsedJson === 'object') {
+                    for (const key in parsedJson) {
+                        if (Array.isArray(parsedJson[key]) && parsedJson[key].every(q => typeof q === 'string')) {
+                            queriesArray = parsedJson[key];
+                            break;
+                        }
+                    }
+                }
+
+                if (queriesArray && queriesArray.length > 0) {
+                    showMessage('success', 'AI search queries generated.');
+                    return queriesArray;
+                }
+            } catch (e) {
+                // Fallback for models that don't strictly adhere to JSON_object or if parsing fails
+                console.warn("LLM response for queries was not perfect JSON, attempting regex extraction:", e);
+                const queryRegex = /"([^"]+)"/g;
+                let matches;
+                const extractedQueries = [];
+                while ((matches = queryRegex.exec(content)) !== null) {
+                    if (matches[1].trim().length > 3) { // Basic filter for very short/empty strings
+                       extractedQueries.push(matches[1].trim());
+                    }
+                }
+                if (extractedQueries.length > 0) {
+                    showMessage('success', `AI queries generated (extracted ${extractedQueries.length}).`);
+                    return extractedQueries;
+                }
+            }
+        }
+        throw new Error("LLM did not return valid queries in the expected format.");
+
+    } catch (error) {
+        console.error("Error generating LLM queries:", error);
+        showMessage('error', `Failed to generate AI queries: ${error.message}`);
+        return [];
+    } finally {
+        setLoading(false);
+    }
+}
+
+
+// --- LLM Verbose Query Generation for BM25 ---
+async function generateBM25VerboseQuery(mainTopic, notes, fileTextContent) {
+    const provider = DOMElements.apiProviderSelect.value;
+    const model = DOMElements.modelSelect.value;
+    const apiKey = DOMElements.apiKeyInput.value;
+
+    if (!apiKey) {
+        showMessage('error', 'API Key is required for BM25 verbose query generation.');
+        return null;
+    }
+
+    let context = `User's main topic/question: "${mainTopic}"\n`;
+    if (notes) context += `Additional notes/context from user: "${notes}"\n`;
+    if (fileTextContent) context += `Key content extracted from uploaded documents:\n---\n${fileTextContent.substring(0, 5000)}\n---\n`; // Allow more context for this
+
+    const subject = DOMElements.subjectSelect.value;
+    let subjectHint = subject && subject !== 'all' ? `The user's primary subject focus is: ${subject}. ` : "";
+
+    const prompt = `
+You are an expert research analyst. Your task is to generate a **single, detailed, verbose paragraph**. This paragraph should synthesize all the provided user input (topic, notes, document excerpts) into a rich description of the ideal research paper or information the user is seeking.
+
+User-provided information:
+${context}
+${subjectHint}
+
+Instructions:
+1.  Read and understand all the provided context.
+2.  DO NOT generate search queries.
+3.  Instead, write a coherent paragraph (around 100-250 words) that elaborates on the key concepts, research questions, methodologies, specific terminology, and desired outcomes or information.
+4.  This paragraph will be used by a BM25 relevance scoring algorithm to compare against the abstracts of retrieved papers. Therefore, it should be rich in relevant keywords, phrases, and conceptual descriptions.
+5.  If the input mentions mathematical concepts, try to incorporate them descriptively.
+6.  The paragraph should sound like a human describing their precise research interest in detail.
+
+Output:
+Return ONLY the single descriptive paragraph as a plain text string. Do not include any other text, titles, or formatting.
+`;
+
+    setLoading(true, "Generating AI verbose query for BM25...");
+    try {
+        const response = await fetch(`${API_CONFIGS[provider].baseUrl}/chat/completions`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: model,
+                messages: [{ role: 'user', content: prompt }],
+                temperature: 0.6, // Slightly higher temperature for more descriptive text
+                max_tokens: 350
+            })
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(`LLM API Error (${response.status}) for BM25 query: ${errorData.error?.message || response.statusText}`);
+        }
+        const data = await response.json();
+        const verboseQuery = data.choices[0]?.message?.content.trim();
+        if (verboseQuery) {
+            showMessage('success', 'AI verbose query for BM25 generated.');
+            currentVerboseBM25Query = verboseQuery; // Store it
+            return verboseQuery;
+        }
+        throw new Error("LLM did not return a valid verbose query.");
+    } catch (error) {
+        console.error("Error generating BM25 verbose query:", error);
+        showMessage('error', `Failed to generate AI verbose query for BM25: ${error.message}`);
+        currentVerboseBM25Query = "";
+        return null;
+    } finally {
+        setLoading(false);
+    }
+}
+
+
+// --- Search Logic (Modified handleSearch and added handleBM25Ranking) ---
+async function handleSearch() {
+    // ... (Existing initial setup: mainTopic, selectedDBs, etc.) ...
+    // --- THIS PART IS LARGELY THE SAME ---
+    const mainTopic = DOMElements.searchInput.value.trim();
+    if (!mainTopic && !uploadedFilesData.length) {
+        showMessage('error', 'Please enter a search topic or upload a file.');
+        return;
+    }
+
+    currentSearchResults = [];
+    currentVerboseBM25Query = ""; // Reset BM25 query on new search
+    DOMElements.resultsContainer.innerHTML = ''; 
+    setLoading(true, "Searching...");
+
+    const selectedDBs = Array.from(DOMElements.databaseCheckboxes)
+                           .filter(cb => cb.checked)
+                           .map(cb => cb.value);
+
+    if (selectedDBs.length === 0) {
+        showMessage('error', 'Please select at least one database to search.');
+        setLoading(false);
+        return;
+    }
+
+    let searchQueries = [mainTopic]; 
+
+    if (DOMElements.aiSearchToggle.checked) {
+        const notes = DOMElements.notesTextarea.value.trim();
+        const fileTextContent = uploadedFilesData.map(f => f.text).join('\n\n').trim();
+        const generatedQueries = await generateLLMQueries(mainTopic, notes, fileTextContent);
+        
+        if (generatedQueries && generatedQueries.length > 0) {
+            searchQueries = generatedQueries; 
+            DOMElements.generatedQueriesContainer.style.display = 'block';
+            DOMElements.queryTagsContainer.innerHTML = generatedQueries.map(q => `<span class="query-tag">${q}</span>`).join('');
+        } else {
+            DOMElements.generatedQueriesContainer.style.display = 'none';
+            if (!mainTopic) { 
+                showMessage('error', 'AI query generation failed and no manual topic entered.');
+                setLoading(false);
+                return;
+            }
+            // Fallback to mainTopic if AI fails but mainTopic exists
+            searchQueries = mainTopic ? [mainTopic] : [];
+             if (searchQueries.length === 0) {
+                showMessage('error', 'No search queries available.');
+                setLoading(false);
+                return;
+            }
+        }
+    } else {
+        DOMElements.generatedQueriesContainer.style.display = 'none';
+         if (!mainTopic) { 
+            showMessage('error', 'AI search is off and no manual topic entered.');
+            setLoading(false);
+            return;
+        }
+        searchQueries = [mainTopic];
+    }
+    // --- END OF LARGELY SAME PART ---
+
+    const maxResults = parseInt(DOMElements.maxResultsSelect.value);
+    const filters = getAdvancedFilters(); // yearStart, yearEnd, subject, paperType
+    let allFetches = [];
+
+    for (const db of selectedDBs) {
+        // Use multiple queries if available, distribute them or send one by one
+        // For simplicity, using first few queries for each DB to avoid too many API calls.
+        let queriesForDb = searchQueries.slice(0, Math.min(searchQueries.length, 2)); // Use up to 2 AI queries
+        if (queriesForDb.length === 0 && mainTopic) queriesForDb.push(mainTopic);
+
+
+        queriesForDb.forEach(q => {
+            if (!q || q.trim() === "") return; // Skip empty queries
+            switch (db) {
+                case 'arxiv': // Stays client-side as it's generally reliable
+                    allFetches.push(searchArxiv(q, maxResults, filters).catch(handleSearchError(db)));
+                    break;
+                case 'scholar': // Calls backend
+                    allFetches.push(searchGoogleScholarBackend(q, maxResults, filters).catch(handleSearchError(db)));
+                    break;
+                case 'pubmed': // Calls backend
+                    allFetches.push(searchPubMedBackend(q, maxResults, filters).catch(handleSearchError(db)));
+                    break;
+                case 'semantic': // Stays client-side
+                    allFetches.push(searchSemanticScholar(q, maxResults, filters).catch(handleSearchError(db)));
+                    break;
+            }
+        });
+    }
+
+    const resultsFromAllDBs = await Promise.all(allFetches);
+    // ... (rest of the result processing, deduplication, rendering is similar) ...
+     resultsFromAllDBs.forEach(resultSet => {
+        if (resultSet && Array.isArray(resultSet)) { 
+            currentSearchResults.push(...resultSet.map(p => ({...p, relevanceScore: p.relevanceScore || (p.citations ? p.citations / 100 : 0.5) }) )); // Add default relevance
+        }
+    });
+    
+    // Deduplicate results
+    const uniqueResults = [];
+    const seen = new Set();
+    for (const paper of currentSearchResults) {
+        const titleKey = paper.title?.toLowerCase().replace(/[^a-z0-9]/gi, '').substring(0, 50) || `id-${paper.id}`;
+        const authorsKey = paper.authors && paper.authors.length > 0 ? paper.authors[0].toLowerCase().replace(/[^a-z0-9]/gi, '') : 'noauthor';
+        const key = `${titleKey}|${authorsKey}`;
+        if (!seen.has(key)) {
+            uniqueResults.push(paper);
+            seen.add(key);
+        }
+    }
+    currentSearchResults = uniqueResults;
+
+    // Default sort or trigger BM25 if it was selected
+    if (currentSortCriteria === 'bm25_relevance' && currentSearchResults.length > 0) {
+        await handleBM25Ranking(); // This will re-sort and re-render
+    } else {
+        sortAndRenderResults(); // This renders with current (non-BM25) sort
+    }
+    
+    if (currentSearchResults.length === 0 && DOMElements.resultsContainer.innerHTML === '') { // Check if not already handled by BM25
+         DOMElements.resultsContainer.innerHTML = `<p class="message info" style="text-align:center; display:block; opacity:1; transform:none;">No papers found matching your criteria.</p>`;
+    } else if (currentSearchResults.length > 0) {
+        DOMElements.resultsHeaderContainer.style.display = 'flex';
+        DOMElements.exportSectionContainer.style.display = 'block';
+    }
+
+    updateStatsDashboard(currentSearchResults, selectedDBs.length);
+    setLoading(false);
+}
+
+async function handleBM25Ranking() {
+    if (currentSearchResults.length === 0) {
+        showMessage('info', 'No papers to rank with BM25. Please search first.');
+        // Ensure BM25 sort is deselected if no results
+        DOMElements.sortBtns.forEach(b => b.classList.remove('active'));
+        const defaultSortBtn = Array.from(DOMElements.sortBtns).find(b => b.dataset.sort === 'relevance');
+        if (defaultSortBtn) defaultSortBtn.classList.add('active');
+        currentSortCriteria = 'relevance';
+        return;
+    }
+
+    // Generate verbose query if not already generated for this search batch
+    if (!currentVerboseBM25Query) {
+        const mainTopic = DOMElements.searchInput.value.trim();
+        const notes = DOMElements.notesTextarea.value.trim();
+        const fileTextContent = uploadedFilesData.map(f => f.text).join('\n\n').trim();
+        const verboseQuery = await generateBM25VerboseQuery(mainTopic, notes, fileTextContent);
+        if (!verboseQuery) {
+            showMessage('error', 'Could not generate verbose query for BM25. Falling back to default relevance.');
+            // Fallback: deselect BM25 sort, select default
+            DOMElements.sortBtns.forEach(b => b.classList.remove('active'));
+            const defaultSortBtn = Array.from(DOMElements.sortBtns).find(b => b.dataset.sort === 'relevance');
+            if (defaultSortBtn) defaultSortBtn.classList.add('active');
+            currentSortCriteria = 'relevance';
+            sortAndRenderResults();
+            return;
+        }
+        currentVerboseBM25Query = verboseQuery;
+    }
+
+    setLoading(true, "Ranking results with BM25...");
+    try {
+        const response = await fetch(`${BACKEND_URL}/api/rank-bm25`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                papers: currentSearchResults, // Send current results
+                verbose_query: currentVerboseBM25Query
+            })
+        });
+        if (!response.ok) {
+            const errData = await response.json();
+            throw new Error(`BM25 Ranking API Error: ${errData.error || response.statusText}`);
+        }
+        const rankedPapers = await response.json();
+        currentSearchResults = rankedPapers; // Update with BM25 scores
+        currentSortCriteria = 'bm25_relevance'; // Ensure this is set
+        
+        // The backend now adds 'bm25_score' and also sets 'relevanceScore' to this value.
+        // So, the existing sortAndRenderResults which uses 'relevanceScore' will work.
+        sortAndRenderResults(); 
+        showMessage('success', 'Results ranked by BM25 relevance.');
+
+    } catch (error) {
+        console.error("Error during BM25 ranking:", error);
+        showMessage('error', `BM25 ranking failed: ${error.message}. Falling back to default relevance.`);
+         // Fallback: deselect BM25 sort, select default
+        DOMElements.sortBtns.forEach(b => b.classList.remove('active'));
+        const defaultSortBtn = Array.from(DOMElements.sortBtns).find(b => b.dataset.sort === 'relevance');
+        if (defaultSortBtn) defaultSortBtn.classList.add('active');
+        currentSortCriteria = 'relevance';
+        sortAndRenderResults(); // Re-render with default sort
+    } finally {
+        setLoading(false);
+    }
+}
+
+
+// --- Database Specific Search Functions (Modified for Backend Calls) ---
+async function searchGoogleScholarBackend(query, maxResults, filters) {
+    const body = {
+        query: query,
+        max_results: maxResults,
+        year_low: filters.yearStart,
+        year_high: filters.yearEnd
+    };
+    const response = await fetch(`${BACKEND_URL}/api/search-scholar`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+    });
+    if (!response.ok) {
+        const errData = await response.json().catch(() => ({error: `Google Scholar search failed with status ${response.status}`}));
+        throw new Error(errData.error || `Google Scholar Backend Error: ${response.statusText}`);
+    }
+    return response.json();
+}
+
+async function searchPubMedBackend(query, maxResults, filters) {
+    const body = {
+        query: query,
+        max_results: maxResults,
+        filters: { // Pass the filters object directly
+            yearStart: filters.yearStart,
+            yearEnd: filters.yearEnd,
+            // Add other PubMed specific filters here if needed
+        }
+    };
+    const response = await fetch(`${BACKEND_URL}/api/search-pubmed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+    });
+     if (!response.ok) {
+        const errData = await response.json().catch(() => ({error: `PubMed search failed with status ${response.status}`}));
+        // The backend might return a more specific error message in errData.error
+        throw new Error(errData.error || `PubMed Backend Error: ${response.statusText}`);
+    }
+    return response.json();
+}
+
+// searchArxiv and searchSemanticScholar can remain largely the same (client-side)
+// or be moved to backend for consistency if desired. For now, PubMed fix was a priority.
+
+// Make sure your sortAndRenderResults function correctly uses 'relevanceScore'
+// when currentSortCriteria is 'bm25_relevance' or 'relevance'.
+// The BM25 backend endpoint now sets 'relevanceScore = paper.bm25_score'
+// so the existing sort logic should pick it up.
+
+/*
+// Example modification in sortAndRenderResults if needed, though likely covered by backend:
+function sortAndRenderResults() {
+    if (!currentSearchResults || currentSearchResults.length === 0) return;
+
+    currentSearchResults.sort((a, b) => {
+        switch (currentSortCriteria) {
+            case 'date':
+                return (new Date(b.publishedDate || 0)) - (new Date(a.publishedDate || 0));
+            case 'citations':
+                return (b.citations || 0) - (a.citations || 0);
+            case 'title':
+                return a.title.localeCompare(b.title);
+            case 'relevance': // This handles API relevance
+            case 'bm25_relevance': // This now also uses relevanceScore (set by BM25 backend)
+            default:
+                // Ensure relevanceScore exists; provide a default if not.
+                const scoreA = a.relevanceScore !== undefined ? a.relevanceScore : (a.bm25_score !== undefined ? a.bm25_score : 0);
+                const scoreB = b.relevanceScore !== undefined ? b.relevanceScore : (b.bm25_score !== undefined ? b.bm25_score : 0);
+                return scoreB - scoreA;
+        }
+    });
+    renderResults(currentSearchResults);
+}
+*/
+
+// Ensure your HTML has a sort button for BM25:
+// <button class="sort-btn" data-sort="bm25_relevance">BM25 Relevance</button>
+// Add it next to other sort buttons.

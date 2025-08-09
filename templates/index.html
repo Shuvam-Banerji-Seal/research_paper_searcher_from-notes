@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>arXiv Math Paper Finder</title>
+    <style>
+        :root {
+            --primary: #2c3e50;
+            --secondary: #3498db;
+            --light: #ecf0f1;
+            --dark: #2c3e50;
+            --success: #2ecc71;
+            --danger: #e74c3c;
+        }
+        
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: var(--dark);
+            background-color: #f8f9fa;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding: 20px;
+            background: linear-gradient(135deg, var(--primary), var(--secondary));
+            color: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        
+        h1 {
+            margin-bottom: 10px;
+            font-size: 2.5rem;
+        }
+        
+        .description {
+            font-size: 1.1rem;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 30px;
+        }
+        
+        .input-section, .results-section {
+            background: white;
+            border-radius: 8px;
+            padding: 25px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: var(--primary);
+        }
+        
+        textarea, select {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 1rem;
+            font-family: inherit;
+        }
+        
+        textarea {
+            min-height: 150px;
+            resize: vertical;
+        }
+        
+        .file-upload {
+            margin: 15px 0;
+            padding: 15px;
+            border: 2px dashed #ddd;
+            border-radius: 4px;
+            text-align: center;
+            cursor: pointer;
+        }
+        
+        .file-upload:hover {
+            border-color: var(--secondary);
+        }
+        
+        .file-upload input {
+            display: none;
+        }
+        
+        .btn {
+            display: inline-block;
+            background: var(--secondary);
+            color: white;
+            padding: 12px 25px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 600;
+            transition: background 0.3s;
+            width: 100%;
+        }
+        
+        .btn:hover {
+            background: #2980b9;
+        }
+        
+        .btn:disabled {
+            background: #bdc3c7;
+            cursor: not-allowed;
+        }
+        
+        .loader {
+            display: none;
+            text-align: center;
+            margin: 20px 0;
+        }
+        
+        .loader .spinner {
+            border: 4px solid rgba(0,0,0,0.1);
+            border-top: 4px solid var(--secondary);
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .paper-card {
+            border: 1px solid #eee;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            background: white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            transition: transform 0.3s, box-shadow 0.3s;
+        }
+        
+        .paper-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        
+        .paper-title {
+            font-size: 1.3rem;
+            font-weight: 600;
+            margin-bottom: 10px;
+            color: var(--primary);
+        }
+        
+        .paper-authors {
+            color: #7f8c8d;
+            margin-bottom: 10px;
+            font-style: italic;
+        }
+        
+        .paper-summary {
+            margin-bottom: 15px;
+            line-height: 1.5;
+        }
+        
+        .paper-meta {
+            display: flex;
+            justify-content: space-between;
+            color: #7f8c8d;
+            font-size: 0.9rem;
+            margin-bottom: 15px;
+        }
+        
+        .paper-category {
+            background: #e0f7fa;
+            color: #00838f;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-weight: 500;
+        }
+        
+        .paper-link {
+            display: inline-block;
+            background: var(--secondary);
+            color: white;
+            padding: 8px 15px;
+            text-decoration: none;
+            border-radius: 4px;
+            transition: background 0.3s;
+        }
+        
+        .paper-link:hover {
+            background: #2980b9;
+        }
+        
+        .error-message {
+            color: var(--danger);
+            background: #fadbd8;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 20px 0;
+            display: none;
+        }
+        
+        .no-results {
+            text-align: center;
+            padding: 30px;
+            color: #7f8c8d;
+        }
+        
+        .provider-toggle {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .provider-toggle input[type="radio"] {
+            display: none;
+        }
+        
+        .provider-toggle label {
+            flex: 1;
+            text-align: center;
+            padding: 12px;
+            background: #ecf0f1;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        
+        .provider-toggle input[type="radio"]:checked + label {
+            background: var(--secondary);
+            color: white;
+        }
+        
+        @media (max-width: 768px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>arXiv Math Paper Finder</h1>
+            <p class="description">
+                Enter your notes or upload a PDF about a mathematical topic, and we'll find relevant arXiv papers using AI.
+            </p>
+        </header>
+        
+        <div class="main-content">
+            <div class="input-section">
+                <form id="search-form">
+                    <div class="form-group">
+                        <label for="text-input">Your Notes (Mathematical Topic):</label>
+                        <textarea id="text-input" placeholder="Describe the mathematical topic you're researching..."></textarea>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Or Upload a File:</label>
+                        <div class="file-upload" id="file-upload-area">
+                            <input type="file" id="file-input" accept=".pdf,.txt">
+                            <p>Drag & drop a PDF or text file here, or click to browse</p>
+                            <p><small>(Max size: 5MB)</small></p>
+                        </div>
+                        <div id="file-info"></div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>AI Provider:</label>
+                        <div class="provider-toggle">
+                            <input type="radio" id="openrouter" name="provider" value="openrouter" checked>
+                            <label for="openrouter">OpenRouter</label>
+                            
+                            <input type="radio" id="groq" name="provider" value="groq">
+                            <label for="groq">Groq</label>
+                        </div>
+                    </div>
+                    
+                    <button type="submit" id="search-btn" class="btn">Find Relevant Papers</button>
+                </form>
+            </div>
+            
+            <div class="results-section">
+                <h2>Research Papers</h2>
+                <div class="loader">
+                    <div class="spinner"></div>
+                    <p>Searching arXiv for relevant papers...</p>
+                </div>
+                
+                <div class="error-message" id="error-message"></div>
+                
+                <div id="results-container"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const form = document.getElementById('search-form');
+            const fileInput = document.getElementById('file-input');
+            const fileUploadArea = document.getElementById('file-upload-area');
+            const fileInfo = document.getElementById('file-info');
+            const searchBtn = document.getElementById('search-btn');
+            const resultsContainer = document.getElementById('results-container');
+            const loader = document.querySelector('.loader');
+            const errorMessage = document.getElementById('error-message');
+            
+            // File upload handling
+            fileUploadArea.addEventListener('click', () => {
+                fileInput.click();
+            });
+            
+            fileUploadArea.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                fileUploadArea.style.borderColor = '#3498db';
+                fileUploadArea.style.backgroundColor = '#f0f8ff';
+            });
+            
+            fileUploadArea.addEventListener('dragleave', () => {
+                fileUploadArea.style.borderColor = '#ddd';
+                fileUploadArea.style.backgroundColor = '';
+            });
+            
+            fileUploadArea.addEventListener('drop', (e) => {
+                e.preventDefault();
+                fileUploadArea.style.borderColor = '#ddd';
+                fileUploadArea.style.backgroundColor = '';
+                
+                if (e.dataTransfer.files.length) {
+                    fileInput.files = e.dataTransfer.files;
+                    updateFileInfo();
+                }
+            });
+            
+            fileInput.addEventListener('change', updateFileInfo);
+            
+            function updateFileInfo() {
+                if (fileInput.files.length > 0) {
+                    const file = fileInput.files[0];
+                    fileInfo.innerHTML = `
+                        <strong>Selected file:</strong> ${file.name} (${formatFileSize(file.size)})
+                        <button type="button" id="remove-file" style="margin-left: 10px; color: #e74c3c; background: none; border: none; cursor: pointer;">×</button>
+                    `;
+                    
+                    document.getElementById('remove-file').addEventListener('click', () => {
+                        fileInput.value = '';
+                        fileInfo.innerHTML = '';
+                    });
+                } else {
+                    fileInfo.innerHTML = '';
+                }
+            }
+            
+            function formatFileSize(bytes) {
+                if (bytes === 0) return '0 Bytes';
+                const k = 1024;
+                const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+                const i = Math.floor(Math.log(bytes) / Math.log(k));
+                return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+            }
+            
+            // Form submission
+            form.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                
+                const textInput = document.getElementById('text-input').value;
+                const file = fileInput.files[0];
+                const provider = document.querySelector('input[name="provider"]:checked').value;
+                
+                if (!textInput && !file) {
+                    showError('Please enter some notes or upload a file.');
+                    return;
+                }
+                
+                // Show loader
+                loader.style.display = 'block';
+                errorMessage.style.display = 'none';
+                resultsContainer.innerHTML = '';
+                
+                try {
+                    const formData = new FormData();
+                    formData.append('text_input', textInput);
+                    if (file) formData.append('file', file);
+                    formData.append('provider', provider);
+                    
+                    const response = await fetch('/search', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`Server error: ${response.status}`);
+                    }
+                    
+                    const papers = await response.json();
+                    
+                    if (papers.length === 0) {
+                        resultsContainer.innerHTML = `
+                            <div class="no-results">
+                                <h3>No papers found</h3>
+                                <p>Try adding more details to your query or upload a PDF with more content.</p>
+                            </div>
+                        `;
+                    } else {
+                        resultsContainer.innerHTML = papers.map(paper => `
+                            <div class="paper-card">
+                                <h3 class="paper-title">${paper.title}</h3>
+                                <div class="paper-authors">${paper.authors.join(', ')}</div>
+                                <div class="paper-meta">
+                                    <span>Published: ${paper.published}</span>
+                                    <span class="paper-category">${paper.primary_category}</span>
+                                </div>
+                                <p class="paper-summary">${paper.summary}</p>
+                                <a href="${paper.pdf_url}" class="paper-link" target="_blank">View PDF</a>
+                            </div>
+                        `).join('');
+                    }
+                } catch (error) {
+                    showError(`Error: ${error.message}`);
+                } finally {
+                    loader.style.display = 'none';
+                }
+            });
+            
+            function showError(message) {
+                errorMessage.textContent = message;
+                errorMessage.style.display = 'block';
+            }
+        });
+    </script>
+</body>
+</html>
