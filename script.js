@@ -23,6 +23,8 @@
             }
         };
 
+        const BACKEND_URL = ''; // Empty string for relative URLs (same origin as frontend)
+
         let uploadedFilesData = []; // Stores { name: string, text: string }
         let currentSearchResults = [];
         let currentSortCriteria = 'relevance';
