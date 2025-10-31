@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 try:
     nltk.data.find('tokenizers/punkt')
-except nltk.downloader.DownloadError:
+except LookupError:
     logger.info("NLTK 'punkt' tokenizer not found. Downloading...")
     nltk.download('punkt')
     logger.info("'punkt' downloaded.")

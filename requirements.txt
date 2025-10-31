@@ -1,7 +1,7 @@
 Flask
 Flask-CORS
 requests
-scrape-google-scholar-py
+scholarly
 rank_bm25
 nltk
 ollama
